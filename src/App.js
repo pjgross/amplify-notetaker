@@ -3,6 +3,7 @@ import { withAuthenticator } from 'aws-amplify-react'
 import { API, graphqlOperation } from "aws-amplify"
 import { createNote, deleteNote, updateNote } from './graphql/mutations'
 import { listNotes } from './graphql/queries'
+import { onCreateNote, onDeleteNote, onUpdateNote } from './graphql/subscriptions'
 
 class App extends Component {
   state = {
@@ -11,63 +12,101 @@ class App extends Component {
     notes: []
   }
 
+  async componentDidMount() {
+    // load the notes from the graphql api
+    this.getNotes()
+    // setup a subscriptions with the graphql api to be notfied of any actions we are interested in
+    this.createNoteListener = API.graphql(graphqlOperation(onCreateNote)).subscribe({
+      // next: provides us with the data associated with the new note
+      next: noteData => {
+        const newNote = noteData.value.data.onCreateNote
+        const prevNotes = this.state.notes.filter(note => note.id !== newNote.id)
+        const updatedNotes = [...prevNotes, newNote]
+        this.setState({notes: updatedNotes})
+      }
+    })
+    this.deleteNoteListener = API.graphql(graphqlOperation(onDeleteNote)).subscribe({
+      next: noteData => {
+        const deletedNote = noteData.value.data.onDeleteNote
+        const updatedNotes = this.state.notes.filter(item => item.id !== deletedNote.id)
+        this.setState({notes: updatedNotes})
+      }
+    })
+    this.updateNoteListener = API.graphql(graphqlOperation(onUpdateNote)).subscribe({
+      next: noteData => {
+        const updatedNote = noteData.value.data.onUpdateNote
+        const index = this.state.notes.findIndex(note => note.id === updatedNote.id)
+        // update the state array
+        const updatedNotes = [
+          ...this.state.notes.slice(0, index),
+          updatedNote,
+          ...this.state.notes.slice(index + 1)
+    ]
+    // update the state
+    this.setState({notes: updatedNotes})
+      }
+    })
+  }
+
+  componentWillUnmount() {
+    // clean up any listeners we have setup
+    this.createNoteListener.unsubscribe()
+    this.deleteNoteListener.unsubscribe()
+    this.updateNoteListener.unsubscribe()
+  }
+
+  // a function that returns tue if we are editting an existing note based on id state
   hasExistingNote = () => {
     const { notes, id} = this.state
     if (id) {
       const isNote = notes.findIndex(note => note.id === id) > -1
       return isNote
-
     }
     return false
 
   }
 
-  async componentDidMount() {
+  // load the notes from the dynamodb table
+  getNotes = async () => {
     const result = await API.graphql(graphqlOperation(listNotes))
     const notes = result.data.listNotes.items
-    this.setState({ notes, note: ""})
+    this.setState({ notes, note: ""})  
   }
 
+  // add a note to the database, the subscription will handle the component update for new notes
   handleAddNote = async event => {
-    const { note, notes } = this.state
+    const { note } = this.state
     event.preventDefault()
+    // check to see whether it is a new note or existing
     if (this.hasExistingNote()) {
       this.handleUpdateNote()
     } else {
       const input = { note }
-      const result = await API.graphql(graphqlOperation(createNote, { input }))
-      const newNote = result.data.createNote
-      const updatedNotes = [newNote, ...notes]
-      this.setState({ notes: updatedNotes, note: ""})
+      await API.graphql(graphqlOperation(createNote, { input }))
+      this.setState({ note: "" })
     }
   }
 
+  // handle updating an existing note
   handleUpdateNote = async () => {
-    const { notes, id, note } = this.state
+    const { id, note } = this.state
     const input = { id, note}
-    const result = await API.graphql(graphqlOperation(updateNote, { input }))
-    const updatedNote = result.data.updateNote
-    const index = notes.findIndex(note => note.id === updatedNote.id)
-    const updatedNotes = [
-      ...notes.slice(0, index),
-      updatedNote,
-      ...notes.slice(index + 1)
-    ]
-    this.setState({notes: updatedNotes, note: "", id: ""})
+    await API.graphql(graphqlOperation(updateNote, { input }))
+    // reset the state
+    this.setState({ note: "", id: "" })
   }
 
   handleDeleteNote = async (noteId) => {
-    const { notes } = this.state
     const input = { id: noteId }
     await API.graphql(graphqlOperation(deleteNote, { input }))
-    const updatedNotes = notes.filter(item => item.id !== noteId)
-    this.setState({notes: updatedNotes})
   }
 
+  // used to keep state inline with the test value
   handleChangeNote = (event) => {
     this.setState({ note: event.target.value })
   }
 
+  // change the state to the click on item
   handleSetNote = ({ note, id }) => this.setState({ note, id})
 
   render() {
@@ -105,5 +144,6 @@ class App extends Component {
     )
   }
 }
-
+// wrapping our component with the awsd authentication against cognito
+// include greetings added the signout button to the header
 export default withAuthenticator(App, { includeGreetings: true })
